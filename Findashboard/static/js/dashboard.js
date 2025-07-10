@@ -4,12 +4,14 @@ let categoryChart;
 let transactions = [];
 let budgets = [];
 let goals = [];
+let accounts = [];
 
 // Initialize dashboard
 document.addEventListener('DOMContentLoaded', function() {
     setCurrentDate();
     loadDashboard();
     setDefaultDates();
+    setupWipeDataModal();
 });
 
 // Set current date in navbar
@@ -32,16 +34,28 @@ function setDefaultDates() {
 // Load all dashboard data
 async function loadDashboard() {
     try {
-        await Promise.all([
-            loadTransactions(),
-            loadBudgets(),
-            loadGoals(),
-            loadSummary(),
-            loadChartData()
-        ]);
+        // Load data in sequence to ensure summary is available for charts
+        await loadAccounts();
+        await loadTransactions();
+        await loadBudgets();
+        await loadGoals();
+        await loadSummary();
+        await loadChartData();
     } catch (error) {
         console.error('Error loading dashboard:', error);
         showAlert('Error loading dashboard data', 'danger');
+    }
+}
+
+// Load accounts
+async function loadAccounts() {
+    try {
+        const response = await fetch('/api/accounts');
+        accounts = await response.json();
+        displayAccounts();
+        updateAccountSelects();
+    } catch (error) {
+        console.error('Error loading accounts:', error);
     }
 }
 
@@ -84,6 +98,8 @@ async function loadSummary() {
         const response = await fetch('/api/analytics/summary');
         const summary = await response.json();
         
+        console.log('Summary data received:', summary);
+        
         document.getElementById('total-income').textContent = formatCurrency(summary.total_income);
         document.getElementById('total-expenses').textContent = formatCurrency(summary.total_expenses);
         document.getElementById('net-income').textContent = formatCurrency(summary.net_income);
@@ -95,6 +111,15 @@ async function loadSummary() {
         } else {
             netIncomeElement.className = 'card-title text-danger mb-0';
         }
+        
+        // Store summary data for category chart
+        window.currentSummary = summary;
+        
+        console.log('Summary elements updated:', {
+            income: document.getElementById('total-income').textContent,
+            expenses: document.getElementById('total-expenses').textContent,
+            net: document.getElementById('net-income').textContent
+        });
     } catch (error) {
         console.error('Error loading summary:', error);
     }
@@ -113,6 +138,14 @@ async function loadChartData() {
 
 // Create charts
 function createCharts(chartData) {
+    // Destroy existing charts if they exist
+    if (incomeExpenseChart) {
+        incomeExpenseChart.destroy();
+    }
+    if (categoryChart) {
+        categoryChart.destroy();
+    }
+
     // Income vs Expenses Chart
     const incomeExpenseCtx = document.getElementById('incomeExpenseChart').getContext('2d');
     incomeExpenseChart = new Chart(incomeExpenseCtx, {
@@ -167,10 +200,11 @@ function createCharts(chartData) {
             labels: categoryData.labels,
             datasets: [{
                 data: categoryData.values,
-                backgroundColor: [
-                    '#3B82F6', '#10B981', '#F59E0B', '#EF4444',
-                    '#8B5CF6', '#06B6D4', '#84CC16', '#F97316'
-                ],
+                backgroundColor: categoryData.labels[0] === 'No Data' ? 
+                    ['#e5e7eb'] : [
+                        '#3B82F6', '#10B981', '#F59E0B', '#EF4444',
+                        '#8B5CF6', '#06B6D4', '#84CC16', '#F97316'
+                    ],
                 borderWidth: 2,
                 borderColor: '#fff'
             }]
@@ -180,7 +214,8 @@ function createCharts(chartData) {
             maintainAspectRatio: false,
             plugins: {
                 legend: {
-                    position: 'bottom'
+                    position: 'bottom',
+                    display: categoryData.labels[0] !== 'No Data'
                 }
             }
         }
@@ -189,6 +224,25 @@ function createCharts(chartData) {
 
 // Get category data for pie chart
 function getCategoryData() {
+    // Use summary data if available, otherwise fall back to global transactions
+    if (window.currentSummary && window.currentSummary.category_expenses) {
+        const categoryExpenses = window.currentSummary.category_expenses;
+        
+        // If no expense data, return empty state
+        if (Object.keys(categoryExpenses).length === 0) {
+            return {
+                labels: ['No Data'],
+                values: [1]
+            };
+        }
+        
+        return {
+            labels: Object.keys(categoryExpenses),
+            values: Object.values(categoryExpenses)
+        };
+    }
+    
+    // Fallback to global transactions (for backward compatibility)
     const categoryExpenses = {};
     
     transactions.forEach(transaction => {
@@ -198,10 +252,59 @@ function getCategoryData() {
         }
     });
     
+    // If no expense data, return empty state
+    if (Object.keys(categoryExpenses).length === 0) {
+        return {
+            labels: ['No Data'],
+            values: [1]
+        };
+    }
+    
     return {
         labels: Object.keys(categoryExpenses),
         values: Object.values(categoryExpenses)
     };
+}
+
+// Display accounts
+function displayAccounts() {
+    const container = document.getElementById('accounts-list');
+    
+    if (accounts.length === 0) {
+        container.innerHTML = '<p class="text-muted">No accounts added yet. Click "Add Account" to get started.</p>';
+        return;
+    }
+    
+    container.innerHTML = accounts.map(account => `
+        <div class="col-md-4 mb-3">
+            <div class="card h-100" style="border-left: 4px solid ${account.color}">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-start mb-2">
+                        <div>
+                            <h6 class="card-title mb-1">${account.name}</h6>
+                            <small class="text-muted text-capitalize">${account.account_type} Account</small>
+                        </div>
+                        <div class="dropdown">
+                            <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                                <i class="fas fa-ellipsis-v"></i>
+                            </button>
+                            <ul class="dropdown-menu">
+                                <li><a class="dropdown-item" href="#" onclick="editAccount(${account.id})">
+                                    <i class="fas fa-edit me-2"></i>Edit
+                                </a></li>
+                                <li><a class="dropdown-item text-danger" href="#" onclick="deleteAccount(${account.id})">
+                                    <i class="fas fa-trash me-2"></i>Delete
+                                </a></li>
+                            </ul>
+                        </div>
+                    </div>
+                    <h4 class="card-text ${account.balance >= 0 ? 'text-success' : 'text-danger'}">
+                        ${formatCurrency(account.balance)}
+                    </h4>
+                </div>
+            </div>
+        </div>
+    `).join('');
 }
 
 // Display recent transactions
@@ -219,7 +322,7 @@ function displayRecentTransactions() {
             <div class="d-flex justify-content-between align-items-start">
                 <div>
                     <h6 class="mb-1">${transaction.description}</h6>
-                    <small class="text-muted">${transaction.category} • ${formatDate(transaction.date)}</small>
+                    <small class="text-muted">${transaction.category} • ${transaction.account_name} • ${formatDate(transaction.date)}</small>
                 </div>
                 <div class="text-end">
                     <span class="fw-bold ${transaction.transaction_type === 'income' ? 'text-success' : 'text-danger'}">
@@ -310,6 +413,7 @@ async function addTransaction() {
         description: document.getElementById('transactionDescription').value,
         amount: parseFloat(document.getElementById('transactionAmount').value),
         category: document.getElementById('transactionCategory').value,
+        account_id: parseInt(document.getElementById('transactionAccount').value),
         transaction_type: document.getElementById('transactionType').value,
         date: document.getElementById('transactionDate').value
     };
@@ -328,6 +432,7 @@ async function addTransaction() {
             bootstrap.Modal.getInstance(document.getElementById('transactionModal')).hide();
             form.reset();
             setDefaultDates();
+            console.log('Reloading dashboard after transaction...');
             loadDashboard();
         } else {
             throw new Error('Failed to add transaction');
@@ -443,6 +548,111 @@ async function updateGoalProgress(goalId) {
     }
 }
 
+// Account management functions
+function updateAccountSelects() {
+    const accountSelect = document.getElementById('transactionAccount');
+    if (accountSelect) {
+        accountSelect.innerHTML = '<option value="">Select Account</option>' + 
+            accounts.map(account => `<option value="${account.id}">${account.name} (${account.account_type})</option>`).join('');
+    }
+}
+
+// Add account
+async function addAccount() {
+    const form = document.getElementById('accountForm');
+    if (!form.checkValidity()) {
+        form.reportValidity();
+        return;
+    }
+    
+    const accountData = {
+        name: document.getElementById('accountName').value,
+        account_type: document.getElementById('accountType').value,
+        balance: parseFloat(document.getElementById('accountBalance').value),
+        color: document.getElementById('accountColor').value
+    };
+    
+    try {
+        const response = await fetch('/api/accounts', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(accountData)
+        });
+        
+        if (response.ok) {
+            showAlert('Account added successfully!', 'success');
+            bootstrap.Modal.getInstance(document.getElementById('accountModal')).hide();
+            form.reset();
+            document.getElementById('accountColor').value = '#3B82F6';
+            loadDashboard();
+        } else {
+            throw new Error('Failed to add account');
+        }
+    } catch (error) {
+        console.error('Error adding account:', error);
+        showAlert('Error adding account', 'danger');
+    }
+}
+
+// Edit account
+function editAccount(accountId) {
+    const account = accounts.find(a => a.id === accountId);
+    if (!account) return;
+    
+    const newBalance = prompt(`Enter new balance for ${account.name}:`, account.balance);
+    if (newBalance === null || newBalance === '') return;
+    
+    updateAccount(accountId, { balance: parseFloat(newBalance) });
+}
+
+// Update account
+async function updateAccount(accountId, data) {
+    try {
+        const response = await fetch(`/api/accounts/${accountId}`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(data)
+        });
+        
+        if (response.ok) {
+            showAlert('Account updated successfully!', 'success');
+            loadDashboard();
+        } else {
+            throw new Error('Failed to update account');
+        }
+    } catch (error) {
+        console.error('Error updating account:', error);
+        showAlert('Error updating account', 'danger');
+    }
+}
+
+// Delete account
+async function deleteAccount(accountId) {
+    if (!confirm('Are you sure you want to delete this account? This action cannot be undone.')) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/api/accounts/${accountId}`, {
+            method: 'DELETE'
+        });
+        
+        if (response.ok) {
+            showAlert('Account deleted successfully!', 'success');
+            loadDashboard();
+        } else {
+            throw new Error('Failed to delete account');
+        }
+    } catch (error) {
+        console.error('Error deleting account:', error);
+        showAlert('Error deleting account', 'danger');
+    }
+}
+
 // Get amount spent in a category for current month
 function getCategorySpent(category) {
     const currentMonth = new Date().toISOString().slice(0, 7);
@@ -485,4 +695,54 @@ function showAlert(message, type) {
             alertDiv.remove();
         }
     }, 5000);
+}
+
+// Wipe data functionality
+function setupWipeDataModal() {
+    const confirmCheckbox = document.getElementById('confirmWipe');
+    const wipeButton = document.getElementById('wipeDataBtn');
+    
+    if (confirmCheckbox && wipeButton) {
+        confirmCheckbox.addEventListener('change', function() {
+            wipeButton.disabled = !this.checked;
+        });
+    }
+}
+
+// Wipe all data
+async function wipeAllData() {
+    const confirmCheckbox = document.getElementById('confirmWipe');
+    
+    if (!confirmCheckbox.checked) {
+        showAlert('Please confirm that you understand this action cannot be undone', 'warning');
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/data/wipe', {
+            method: 'DELETE',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        if (response.ok) {
+            showAlert('All data has been wiped successfully!', 'success');
+            
+            // Close the modal
+            bootstrap.Modal.getInstance(document.getElementById('wipeDataModal')).hide();
+            
+            // Reset the checkbox
+            confirmCheckbox.checked = false;
+            document.getElementById('wipeDataBtn').disabled = true;
+            
+            // Reload the dashboard to show empty state
+            loadDashboard();
+        } else {
+            throw new Error('Failed to wipe data');
+        }
+    } catch (error) {
+        console.error('Error wiping data:', error);
+        showAlert('Error wiping data. Please try again.', 'danger');
+    }
 } 
